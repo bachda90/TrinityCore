@@ -214,7 +214,7 @@ void LoadM2Cameras(std::string const& dataPath)
         std::streamoff const fileSize = m2file.tellg();
 
         // Reject if not at least the size of the header
-        if (static_cast<uint32 const>(fileSize) < sizeof(M2Header))
+        if (static_cast<uint32 const>(fileSize) < sizeof(M2Header) + 4)
         {
             TC_LOG_ERROR("server.loading", "Camera file %s is damaged. File is smaller than header size", filename.string().c_str());
             m2file.close();
@@ -225,7 +225,7 @@ void LoadM2Cameras(std::string const& dataPath)
         m2file.seekg(0, std::ios::beg);
         char fileCheck[5];
         m2file.read(fileCheck, 4);
-        fileCheck[4] = 0;
+        fileCheck[4] = '\0';
 
         // Check file has correct magic (MD21)
         if (strcmp(fileCheck, "MD21"))
@@ -245,18 +245,38 @@ void LoadM2Cameras(std::string const& dataPath)
         }
         m2file.close();
 
-        // Read header
-        M2Header const* header = reinterpret_cast<M2Header const*>(buffer.data());
+        bool fileValid = true;
+        uint32 m2start = 0;
+        char const* ptr = buffer.data();
+        while (m2start + 4 < buffer.size() && *reinterpret_cast<uint32 const*>(ptr) != '02DM')
+        {
+            ++m2start;
+            ++ptr;
+            if (m2start + sizeof(M2Header) > buffer.size())
+            {
+                fileValid = false;
+                break;
+            }
+        }
 
-        if (header->ofsCameras + sizeof(M2Camera) > static_cast<uint32 const>(fileSize))
+        if (!fileValid)
+        {
+            TC_LOG_ERROR("server.loading", "Camera file %s is damaged. File is smaller than header size.", filename.string().c_str());
+            continue;
+        }
+
+        // Read header
+        M2Header const* header = reinterpret_cast<M2Header const*>(buffer.data() + m2start);
+
+        if (m2start + header->ofsCameras + sizeof(M2Camera) > static_cast<uint32 const>(fileSize))
         {
             TC_LOG_ERROR("server.loading", "Camera file %s is damaged. Camera references position beyond file end", filename.string().c_str());
             continue;
         }
 
         // Get camera(s) - Main header, then dump them.
-        M2Camera const* cam = reinterpret_cast<M2Camera const*>(buffer.data() + header->ofsCameras);
-        if (!readCamera(cam, fileSize, header, cameraEntry))
+        M2Camera const* cam = reinterpret_cast<M2Camera const*>(buffer.data() + m2start + header->ofsCameras);
+        if (!readCamera(cam, fileSize - m2start, header, cameraEntry))
             TC_LOG_ERROR("server.loading", "Camera file %s is damaged. Camera references position beyond file end", filename.string().c_str());
     }
     TC_LOG_INFO("server.loading", ">> Loaded " SZFMTD " cinematic waypoint sets in %u ms", sFlyByCameraStore.size(), GetMSTimeDiffToNow(oldMSTime));
